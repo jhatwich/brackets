@@ -23,7 +23,7 @@
 
 
 /*jslint vars: true, plusplus: true, devel: true, nomen: true, indent: 4, maxerr: 50 */
-/*global define, $  */
+/*global define, $, window  */
 
 /**
  * WorkingSetView generates the UI for the list of the files user is editing based on the model provided by EditorManager.
@@ -39,7 +39,9 @@ define(function (require, exports, module) {
         EditorManager         = require("editor/EditorManager"),
         FileViewController    = require("project/FileViewController"),
         NativeFileSystem      = require("file/NativeFileSystem").NativeFileSystem,
-        ViewUtils             = require("utils/ViewUtils");
+        ViewUtils             = require("utils/ViewUtils"),
+        RelatedFiles          = require("project/RelatedFiles"),
+        ProjectManager        = require("project/ProjectManager");
     
     
     /** Each list item in the working set stores a references to the related document in the list item's data.  
@@ -63,6 +65,21 @@ define(function (require, exports, module) {
 
     /**
      * @private
+     * adds the style 'vertical-scroll' if a vertical scroll bar is present
+     */
+    function _adjustForScrollbars() {
+        var $container = $("#open-files-container");
+        if ($container[0].scrollHeight > $container[0].clientHeight) {
+            if (!$container.hasClass("vertical-scroll")) {
+                $container.addClass("vertical-scroll");
+            }
+        } else {
+            $container.removeClass("vertical-scroll");
+        }
+    }
+    
+    /**
+     * @private
      * Shows/Hides open files list based on working set content.
      */
     function _redraw() {
@@ -71,6 +88,7 @@ define(function (require, exports, module) {
         } else {
             $openFilesContainer.show();
         }
+        _adjustForScrollbars();
         
         _fireSelectionChanged();
     }
@@ -112,6 +130,20 @@ define(function (require, exports, module) {
         }
     }
     
+    function _toggleRelatedFilesDisplay($listItem, open) {
+        
+        var $relatedFiles = $($listItem.children(".working-set-related-files")[0]),
+            $relatedFilesLink = $($listItem.children(".working-set-related-link")[0]);
+        
+        if (open) {
+            $listItem.addClass("related-opened");
+        } else {
+            $listItem.removeClass("related-opened");
+            $relatedFiles.empty();
+        }
+        _adjustForScrollbars();
+    }
+    
     /** 
      * Updates the appearance of the list element based on the parameters provided.
      * @private
@@ -119,16 +151,100 @@ define(function (require, exports, module) {
      * @param {?Document} selectedDoc
      */
     function _updateListItemSelection(listItem, selectedDoc) {
-        var shouldBeSelected = (selectedDoc && $(listItem).data(_FILE_KEY).fullPath === selectedDoc.file.fullPath);
+        var $listItem = $(listItem),
+            shouldBeSelected = (selectedDoc && $listItem.data(_FILE_KEY).fullPath === selectedDoc.file.fullPath);
         
         // cast to Boolean needed because toggleClass() distinguishes true/false from truthy/falsy
-        $(listItem).toggleClass("selected", Boolean(shouldBeSelected));
+        if (!shouldBeSelected && $listItem.hasClass("selected") && $listItem.hasClass("related-opened")) {
+            window.setTimeout(function () {
+                _toggleRelatedFilesDisplay($listItem, false);
+                
+                $listItem.toggleClass("selected", Boolean(shouldBeSelected));
+                _fireSelectionChanged();
+            }, 250);
+        } else {
+            $listItem.toggleClass("selected", Boolean(shouldBeSelected));
+        }
+        
+        if (shouldBeSelected) {
+            if (!RelatedFiles.hasLoaded(selectedDoc.file.fullPath)) {
+                $listItem.addClass("related-files-loading");
+            }
+            
+            RelatedFiles.findDocRelatedFiles(selectedDoc.file)
+                .done(function () {
+                    $listItem.removeClass("related-files-loading");
+                    
+                    var relatedFiles = RelatedFiles.getRelatedFiles(selectedDoc.file);
+                    if (relatedFiles && relatedFiles.length > 0) {
+                        if (!$listItem.hasClass("has-related-files")) {
+                            $listItem.addClass("has-related-files");
+                        }
+                    } else {
+                        $listItem.removeClass("has-related-files");
+                    }
+                })
+                .fail(function () {
+                    $listItem.removeClass("has-related-files");
+                    $listItem.removeClass("related-files-loading");
+                });
+        }
     }
 
     function isOpenAndDirty(file) {
         var docIfOpen = DocumentManager.getOpenDocumentForPath(file.fullPath);
         return (docIfOpen && docIfOpen.isDirty);
     }
+    
+    function _bindRelatedFileLink($item, $relatedFiles, $relatedFilesLink, $relatedFile, file) {
+        
+        $relatedFile.click(function () {
+            _toggleRelatedFilesDisplay($item, false);
+            
+            _updateFileStatusIcon($item, isOpenAndDirty(file), false);
+            
+            window.setTimeout(function () {
+                FileViewController.addToWorkingSetAndSelect(file.fullPath);
+            }, 0);
+            return false;
+        });
+    }
+    
+    function _updateRelatedFilesStatus(file, $item) {
+        
+        var relatedFiles = RelatedFiles.getRelatedFiles(file);
+        if (relatedFiles && relatedFiles.length > 0) {
+            if (!$item.hasClass("has-related-files")) {
+                $item.addClass("has-related-files");
+            }
+        } else {
+            $item.removeClass("has-related-files");
+        }
+    }
+    
+    function _populateRelatedFiles($item, $relatedFiles, $relatedFilesLink, file) {
+        var relatedFiles = RelatedFiles.getRelatedFiles(file),
+            pathDisplay,
+            pathTooltip,
+            $relatedFile,
+            i;
+        $relatedFiles.empty();
+        
+        for (i = 0; relatedFiles && i < relatedFiles.length; i = i + 1) {
+                    
+            pathDisplay = relatedFiles[i].fullPath.substring(ProjectManager.getProjectRoot().fullPath.length);
+            pathTooltip = RelatedFiles.getRelativeURI(ProjectManager.getProjectRoot().fullPath, relatedFiles[i].fullPath, file.fullPath);
+                    
+            $relatedFile = $("<a href='#'></a>").text(pathDisplay);
+            $relatedFile.attr("title", pathTooltip);
+            $relatedFiles.append($relatedFile);
+                    
+            _bindRelatedFileLink($item, $relatedFiles, $relatedFilesLink, $relatedFile, relatedFiles[i]);
+        }
+        
+        _adjustForScrollbars();
+    }
+
     
     /** 
      * Builds the UI for a new list item and inserts in into the end of the list
@@ -141,8 +257,12 @@ define(function (require, exports, module) {
 
         // Create new list item with a link
         var $link = $("<a href='#'></a>").text(file.name);
+        var $relatedFilesLink = $("<a class='working-set-related-link' href='#'></a>").html("&laquo;");
+        var $relatedFiles = $("<div class='working-set-related-files'></div>");
         var $newItem = $("<li></li>")
             .append($link)
+            .append($relatedFilesLink)
+            .append($relatedFiles)
             .data(_FILE_KEY, file);
 
         $openFilesContainer.find("ul").append($newItem);
@@ -152,19 +272,46 @@ define(function (require, exports, module) {
         // Update the listItem's apperance
         _updateFileStatusIcon($newItem, isOpenAndDirty(file), false);
         _updateListItemSelection($newItem, curDoc);
-
+        
         $newItem.click(function () {
-            FileViewController.openAndSelectDocument(file.fullPath, FileViewController.WORKING_SET_VIEW);
+            
+            $newItem.addClass("selected");
+            if (!RelatedFiles.hasLoaded(file)) {
+                $newItem.addClass("related-files-loading");
+            } else {
+                _updateRelatedFilesStatus(file, $newItem);
+            }
+            window.setTimeout(function () {
+                FileViewController.openAndSelectDocument(file.fullPath, FileViewController.WORKING_SET_VIEW);
+            }, 0);
         });
 
         $newItem.hover(
             function () {
                 _updateFileStatusIcon($(this), isOpenAndDirty(file), true);
+                _updateRelatedFilesStatus(file, $newItem);
             },
             function () {
                 _updateFileStatusIcon($(this), isOpenAndDirty(file), false);
             }
         );
+        
+        $relatedFilesLink.click(function () {
+            var relatedFiles,
+                i,
+                $relatedFile,
+                pathDisplay,
+                pathTooltip;
+            
+            if (!$newItem.hasClass("related-opened")) {
+                _toggleRelatedFilesDisplay($newItem, true);
+                
+                _populateRelatedFiles($newItem, $relatedFiles, $relatedFilesLink, file);
+                
+            } else {
+                _toggleRelatedFilesDisplay($newItem, false);
+            }
+        });
     }
     
     /** 
@@ -191,7 +338,7 @@ define(function (require, exports, module) {
         } else {
             doc = null;
         }
-            
+        
         // Iterate through working set list and update the selection on each
         var items = $openFilesContainer.find("ul").children().each(function () {
             _updateListItemSelection(this, doc);
@@ -281,6 +428,25 @@ define(function (require, exports, module) {
     
         $(DocumentManager).on("dirtyFlagChange", function (event, doc) {
             _handleDirtyFlagChanged(doc);
+        });
+        
+        $(DocumentManager).on("documentSaved", function (event, doc) {
+            window.setTimeout(function () {
+                
+                // Iterate through working set list and update the selection on each
+                var items = $openFilesContainer.find("ul").children().each(function () {
+                    if ($(this).data(_FILE_KEY).fullPath === doc.file.fullPath) {
+                        if ($(this).hasClass("related-opened")) {
+                            var $relatedFiles = $($(this).children(".working-set-related-files")[0]),
+                                $relatedFilesLink = $($(this).children(".working-set-related-files-link")[0]);
+                            $relatedFiles.empty();
+                            _populateRelatedFiles($(this), $relatedFiles, $relatedFilesLink, doc.file);
+                        }
+                    }
+                    
+                });
+            }, 10);
+            
         });
     
         $(FileViewController).on("documentSelectionFocusChange", function (event, eventTarget) {

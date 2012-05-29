@@ -167,8 +167,11 @@ define(function (require, exports, module) {
 
             // files should be in the working set
             runs(function () {
+                
                 expect($listItems.find("a").get(0).text === "file_one.js").toBeTruthy();
-                expect($listItems.find("a").get(1).text === "file_two.js").toBeTruthy();
+                //get(1) is the related files link
+                
+                expect($listItems.find("a").get(2).text === "file_two.js").toBeTruthy();
 
                 // files should be clean
                 expect($listItems.find(".file-status-icon dirty").length).toBe(0);

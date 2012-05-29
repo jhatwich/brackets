@@ -45,7 +45,8 @@ define(function (require, exports, module) {
         EditorManager       = require("editor/EditorManager"),
         Commands            = require("command/Commands"),
         Strings             = require("strings"),
-        CommandManager      = require("command/CommandManager");
+        CommandManager      = require("command/CommandManager"),
+        RelatedFiles        = require("project/RelatedFiles");
 
     /**
      * Remove trailing "px" from a style size value.
@@ -143,12 +144,36 @@ define(function (require, exports, module) {
         // Range list
         var $rangeList = $(document.createElement("ul")).appendTo($related);
         
+        var relatedFiles = RelatedFiles.getRelatedFiles(hostEditor.document.file),
+            htRelatedFiles = {};
+        if (relatedFiles && relatedFiles.length > 0) {
+            relatedFiles.forEach(function (relatedFile) {
+                htRelatedFiles[relatedFile.fullPath] = true;
+            });
+            
+            this._ranges.sort(function (rangeA, rangeB) {
+                var ARelated = htRelatedFiles[rangeA.textRange.document.file.fullPath],
+                    BRelated = htRelatedFiles[rangeB.textRange.document.file.fullPath];
+                
+                if (BRelated && !ARelated) {
+                    return 1;
+                }
+                return -1;
+            });
+        }
+        
         // create range list & add listeners for range textrange changes
         var rangeItemText;
         this._ranges.forEach(function (range, i) {
             // Create list item UI
             var $rangeItem = $(document.createElement("li")).appendTo($rangeList);
+            
+            if (htRelatedFiles[range.textRange.document.file.fullPath]) {
+                $rangeItem.addClass("related-file");
+            }
+            
             _updateRangeLabel($rangeItem, range);
+            $rangeItem.text($rangeItem.text());
             $rangeItem.mousedown(function () {
                 self.setSelectedIndex(i);
             });
